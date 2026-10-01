@@ -1,0 +1,14 @@
+{
+  "a": 1.5,
+  "h": 4.0,
+  "d": 1.0,
+  "R": 0.5,
+  "rowOffset": 4.5,
+  "scale_mm": 0.05,
+  "nRows": 5,
+  "nLoops": 5,
+  "samples_per_loop": 192,
+  "tube_sides": 24,
+  "width": 256,
+  "height": 256
+}
