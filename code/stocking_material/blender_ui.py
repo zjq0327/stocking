@@ -8,6 +8,7 @@ import bpy
 from bpy.props import FloatProperty, IntProperty, PointerProperty, StringProperty
 
 from .parameters import Parameters
+from .stretch_parameters import StretchParameters
 from .scene import PARAMETERS_KEY, build_scene
 
 
@@ -17,6 +18,7 @@ PARAMETER_NAMES = (
     "a", "h", "d", "R", "rowOffset", "scale_mm", "nRows", "nLoops",
     "samples_per_loop", "tube_sides", "width", "height",
 )
+STRETCH_NAMES = tuple(StretchParameters().to_dict())
 
 
 class STOCKING_PG_settings(bpy.types.PropertyGroup):
@@ -41,9 +43,32 @@ class STOCKING_PG_settings(bpy.types.PropertyGroup):
         default=str(PROJECT_ROOT / "render" / "plain-knit-v1"),
     )
     status: StringProperty(name="状态", default="就绪")
+    nodes: IntProperty(name="力学节点数", default=64, min=32, max=256)
+    axial_stiffness_N: FloatProperty(name="轴向刚度 EA (N)", default=1.0, min=1e-6)
+    bending_stiffness_N_mm2: FloatProperty(name="弯曲刚度 B (N mm²)", default=1e-5, min=1e-10, precision=7)
+    contact_stiffness_N_per_mm: FloatProperty(name="接触系数 (N/mm)", default=100.0, min=1e-6)
+    lambda_x: FloatProperty(name="横向长度倍率", default=1.2, min=1.0, max=1.6, precision=3)
+    lambda_y: FloatProperty(name="纵向长度倍率", default=1.0, min=1.0, max=1.6, precision=3)
+    load_steps: IntProperty(name="加载步数", default=8, min=1, max=100)
+    max_iterations: IntProperty(name="每步最大迭代", default=2500, min=1)
+    gradient_tolerance: FloatProperty(name="残余力容差 (N)", default=1e-6, min=1e-10, precision=8)
+    contact_margin_ratio: FloatProperty(name="接触作用距离 / 半径", default=.05, min=.001)
+    max_strain: FloatProperty(name="最大允许纱线应变", default=.03, min=.0001)
+    stretch_asset_dir: StringProperty(name="拉伸资产目录", subtype="DIR_PATH",
+        default=str(STOCKING_ROOT / "assets" / "plain-knit-stretch-v2"))
+    stretch_preview_dir: StringProperty(name="拉伸预览目录", subtype="DIR_PATH",
+        default=str(PROJECT_ROOT / "render" / "plain-knit-stretch-v2"))
 
     def parameters(self):
         return Parameters.from_dict({name: getattr(self, name) for name in PARAMETER_NAMES})
+
+    def stretch_parameters(self):
+        values = {name: getattr(self, name) for name in STRETCH_NAMES}
+        # RNA stores FloatProperty values as float32: its 1.6 upper bound reads
+        # back as 1.600000023841858. Normalize only this UI bridge; JSON stays strict.
+        for name in ("lambda_x", "lambda_y"):
+            values[name] = min(max(values[name], 1.0), 1.6)
+        return StretchParameters.from_dict(values)
 
 
 class STOCKING_OT_rebuild(bpy.types.Operator):
@@ -101,6 +126,30 @@ class STOCKING_OT_bake_export(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class STOCKING_OT_stretch(bpy.types.Operator):
+    bl_idname = "stocking_material.stretch"
+    bl_label = "离线计算并导出拉伸样片"
+    bl_description = "先松弛参考态，再分步加载并重新生成双面特征；计算可能需要数分钟"
+
+    def execute(self, context):
+        from .stretch_pipeline import build_stretched_asset
+        settings = context.scene.stocking_material
+        try:
+            if not settings.stretch_asset_dir.strip() or not settings.stretch_preview_dir.strip():
+                raise ValueError("请指定拉伸资产和预览目录")
+            build_stretched_asset(settings.parameters(), settings.stretch_parameters(),
+                Path(bpy.path.abspath(settings.stretch_asset_dir)),
+                Path(bpy.path.abspath(settings.stretch_preview_dir)), save_blend=False)
+            settings.status = "拉伸平衡与双面特征已导出"
+            self.report({"INFO"}, settings.status)
+        except Exception as exc:
+            traceback.print_exc()
+            settings.status = "拉伸未完成：" + str(exc)
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
 class STOCKING_PT_authoring(bpy.types.Panel):
     bl_label = "平针制作 · ID / P / N / T"
     bl_idname = "STOCKING_PT_authoring"
@@ -129,11 +178,23 @@ class STOCKING_PT_authoring(bpy.types.Panel):
         output.prop(settings, "asset_dir")
         output.prop(settings, "preview_dir")
         output.operator(STOCKING_OT_bake_export.bl_idname, icon="EXPORT")
+        stretch = layout.box()
+        stretch.label(text="周期小片拉伸 · 两个方向均指定长度")
+        row = stretch.row(align=True)
+        row.prop(settings, "lambda_x")
+        row.prop(settings, "lambda_y")
+        for name in ("nodes", "load_steps", "axial_stiffness_N", "bending_stiffness_N_mm2"):
+            stretch.prop(settings, name)
+        stretch.label(text="固定半径、无摩擦；默认参数未标定。")
+        stretch.prop(settings, "stretch_asset_dir")
+        stretch.prop(settings, "stretch_preview_dir")
+        stretch.operator(STOCKING_OT_stretch.bl_idname, icon="MOD_PHYSICS")
         layout.label(text="保存 .blend 可保留当前样片与参数。")
         layout.label(text=settings.status)
 
 
-CLASSES = (STOCKING_PG_settings, STOCKING_OT_rebuild, STOCKING_OT_bake_export, STOCKING_PT_authoring)
+CLASSES = (STOCKING_PG_settings, STOCKING_OT_rebuild, STOCKING_OT_bake_export,
+           STOCKING_OT_stretch, STOCKING_PT_authoring)
 
 
 @bpy.app.handlers.persistent
@@ -146,6 +207,13 @@ def _restore_saved_parameters(_unused=None):
             p = Parameters.from_dict(json.loads(raw))
             for name in PARAMETER_NAMES:
                 setattr(scene.stocking_material, name, getattr(p, name))
+            if scene.get("stocking_stretch_parameters"):
+                stretch = StretchParameters.from_dict(json.loads(scene["stocking_stretch_parameters"]))
+                for name in STRETCH_NAMES:
+                    setattr(scene.stocking_material, name, getattr(stretch, name))
+                for key in ("stretch_asset_dir", "stretch_preview_dir"):
+                    if scene.get("stocking_" + key):
+                        setattr(scene.stocking_material, key, scene["stocking_" + key])
         except (ValueError, TypeError, KeyError) as exc:
             scene.stocking_material.status = "保存的参数未能载入：" + str(exc)
 

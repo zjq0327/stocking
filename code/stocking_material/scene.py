@@ -77,6 +77,8 @@ def build_scene(p, geometry=None, scene=None):
     """
     p.validate()
     scene = scene or bpy.context.scene
+    if geometry is None:
+        scene["stocking_material_geometry_state"] = "static_crane_v1"
     geometry = geometry if geometry is not None else generate_preview_geometry(p)
     _remove_owned_collection(scene)
     collection = bpy.data.collections.new("Stocking | Plain knit")
@@ -125,9 +127,27 @@ def build_scene(p, geometry=None, scene=None):
         light.location = center + Vector(offset) * span
         _aim(light, center)
 
-    scene.unit_settings.system = "METRIC"
-    scene.unit_settings.scale_length = 0.001
-    scene.unit_settings.length_unit = "MILLIMETERS"
+    has_user_objects = any(obj.get(OWNER_KEY) != OWNER_VALUE for obj in scene.objects)
+    if not has_user_objects:
+        scene.unit_settings.system = "METRIC"
+        scene.unit_settings.scale_length = 0.001
+        scene.unit_settings.length_unit = "MILLIMETERS"
+    # Keep existing objects' physical interpretation unchanged. The generated
+    # mesh coordinates and yarn attributes stay in local millimeters.
+    unit_factor = 0.001 / scene.unit_settings.scale_length
+    if unit_factor != 1.0:
+        yarn.scale = (unit_factor,) * 3
+        for obj in collection.objects:
+            if obj == yarn:
+                continue
+            obj.location *= unit_factor
+            if obj.type == "CAMERA":
+                obj.data.ortho_scale *= unit_factor
+                obj.data.clip_start *= unit_factor
+                obj.data.clip_end *= unit_factor
+            elif obj.type == "LIGHT":
+                obj.data.size *= unit_factor
+                obj.data.energy *= unit_factor * unit_factor
     scene[PARAMETERS_KEY] = json.dumps(p.to_dict(), ensure_ascii=False)
     if scene.camera is None or scene.camera.get(OWNER_KEY) == OWNER_VALUE:
         scene.camera = camera
