@@ -1,0 +1,17 @@
+{
+  "leg_length_mm": 520.0,
+  "leg_width_mm": 90.0,
+  "ankle_width_mm": 48.0,
+  "foot_length_mm": 210.0,
+  "foot_width_mm": 64.0,
+  "flattening": 0.16,
+  "heel_bend_radius_mm": 55.0,
+  "toe_length_mm": 35.0,
+  "toe_taper": 0.15,
+  "toe_rounding_ratio": 0.25,
+  "circumference_segments": 32,
+  "leg_segments": 64,
+  "heel_segments": 24,
+  "foot_segments": 24,
+  "toe_segments": 12
+}
